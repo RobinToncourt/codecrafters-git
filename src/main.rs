@@ -41,30 +41,60 @@ fn git_cat_file(args: &Vec<String>) {
         return;
     }
 
-    let _option: &str = args[2].as_str();
+    let option: &str = args[2].as_str();
+    match option {
+        "-p" => {},
+        _ => {
+            println!("Invalid option.");
+            return;
+        }
+    }
+
     let hash: &str = args[3].as_str();
     let file_path: String = hash_to_path(hash);
 
     // Open file.
-    let compress_file_content: String = fs::read_to_string(file_path).unwrap();
-    // TODO: check result.
+    let Ok(compress_file_content) = fs::read(&file_path) else {
+        println!("File does not exist: {file_path}");
+        return;
+    };
 
     // Uncompress file with flate 2(?).
-    let mut d = GzDecoder::new(compress_file_content.as_bytes());
+    let mut d = GzDecoder::new(&compress_file_content[..]);
     let mut decompress_file_content = String::new();
-    d.read_to_string(&mut decompress_file_content).unwrap();
-    // TODO: check result.
+    let Ok(_) = d.read_to_string(&mut decompress_file_content) else {
+        println!("Invalid UTF-8.");
+        return;
+    };
 
     // Read header and content.
-    let split: Vec<&str> = decompress_file_content.split('\0').collect();
-    // TODO: check split.
-    let _object_and_size: &str = split[0];
-    let content: &str = split[1];
+    let split: Vec<&str> = decompress_file_content
+        .split(|c: char| c.eq(&' ') || c.eq(&'\0'))
+        .filter(|p| !p.is_empty())
+        .collect();
 
-    // TODO: Oppose content size and size.
-    // TODO: Do action based on option.
+    if split.len() != 3 {
+        println!("Invalid git blob.");
+        return;
+    }
 
-    print!("{content}");
+    let _header: &str = split[0];
+    let Ok(size) = split[1].parse::<usize>() else {
+        println!("Invalid size.");
+        return;
+    };
+    let content: &str = split[2];
+
+    if size != content.len() {
+        println!(
+            "Sizes do not match, size={size}, content size={}", content.len()
+        );
+    }
+
+    match option {
+        "-p" => print!("{content}"),
+        _ => panic!("Impossible, option checked before."),
+    }
 }
 
 fn hash_to_path(hash: &str) -> String {
