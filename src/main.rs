@@ -9,7 +9,7 @@ use flate2::read::GzDecoder;
 const GIT_COMMAND_INIT: &str = "init";
 const GIT_COMMAND_CAT_FILE: &str = "cat-file";
 
-const GIT_OBJECTS_FOLDER_PATH: &str = "./.git/objects";
+const GIT_OBJECTS_FOLDER_PATH: &str = ".git/objects/";
 
 fn main() {
     let args: Vec<String> = env::args().collect();
