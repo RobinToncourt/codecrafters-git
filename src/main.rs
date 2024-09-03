@@ -68,29 +68,15 @@ fn git_cat_file(args: &Vec<String>) {
         return;
     };
 
-    dbg!(&decompress_file_content);
-
-    // Read header and content.
-    let split: Vec<&str> = decompress_file_content
-        .split(|c: char| c.eq(&' ') || c.eq(&'\0'))
-        .filter(|p| !p.is_empty())
-        .collect();
-
-    dbg!(&split);
-
-    if split.len() != 3 {
-        println!("Invalid git blob.");
-        return;
-    }
-
-    let _header: &str = split[0];
-    let Ok(size) = split[1].parse::<usize>() else {
-        println!("Invalid size.");
-        return;
-    };
-    let content: &str = split[2];
-
-    println!("{_header}, {size}, {content}");
+    // Read header, size and content.
+    let (_object, size, content) =
+        match git_cat_file_split_file(&decompress_file_content) {
+            Ok((header, size, content)) => (header, size, content),
+            Err(err_message) => {
+                println!("{err_message}");
+                return;
+            }
+        };
 
     if size != content.len() {
         println!(
@@ -102,6 +88,26 @@ fn git_cat_file(args: &Vec<String>) {
         "-p" => print!("{content}"),
         _ => panic!("Impossible, option checked before."),
     }
+}
+
+fn git_cat_file_split_file(
+    decompress_file_content: &str
+) -> Result<(&str, usize, &str), String> {
+    let split: Vec<&str> = decompress_file_content.split('\0').collect();
+
+    if split.len() != 2 {
+        return Err(format!("Invalid object type."));
+    }
+
+    let Some((object, size)) = split[0].split_once(' ') else {
+        return Err(format!("Invalid header: {}", split[0]));
+    };
+    let Ok(size) = size.parse::<usize>() else {
+        return Err(format!("Invalid size: {size}"));
+    };
+    let content = split[1];
+
+    Ok((object, size, content))
 }
 
 fn hash_to_path(hash: &str) -> String {
