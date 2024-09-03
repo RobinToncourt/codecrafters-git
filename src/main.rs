@@ -68,11 +68,15 @@ fn git_cat_file(args: &Vec<String>) {
         return;
     };
 
+    dbg!(&decompress_file_content);
+
     // Read header and content.
     let split: Vec<&str> = decompress_file_content
         .split(|c: char| c.eq(&' ') || c.eq(&'\0'))
         .filter(|p| !p.is_empty())
         .collect();
+
+    dbg!(&split);
 
     if split.len() != 3 {
         println!("Invalid git blob.");
@@ -85,6 +89,8 @@ fn git_cat_file(args: &Vec<String>) {
         return;
     };
     let content: &str = split[2];
+
+    println!("{_header}, {size}, {content}");
 
     if size != content.len() {
         println!(
