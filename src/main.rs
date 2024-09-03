@@ -2,9 +2,10 @@
 use std::env;
 #[allow(unused_imports)]
 use std::fs;
+use std::fs::File;
 
 use std::io::prelude::*;
-use flate2::read::GzDecoder;
+use flate2::read::ZlibDecoder;
 
 const GIT_COMMAND_INIT: &str = "init";
 const GIT_COMMAND_CAT_FILE: &str = "cat-file";
@@ -54,13 +55,13 @@ fn git_cat_file(args: &Vec<String>) {
     let file_path: String = hash_to_path(hash);
 
     // Open file.
-    let Ok(compress_file_content) = fs::read(&file_path) else {
+    let Ok(file) = File::open(&file_path) else {
         println!("File does not exist: {file_path}");
         return;
     };
 
     // Uncompress file with flate 2(?).
-    let mut d = GzDecoder::new(&compress_file_content[..]);
+    let mut d = ZlibDecoder::new(file);
     let mut decompress_file_content = String::new();
     let Ok(_) = d.read_to_string(&mut decompress_file_content) else {
         println!("Invalid UTF-8.");
