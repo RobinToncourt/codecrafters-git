@@ -18,6 +18,7 @@ use crypto::sha1::Sha1;
 const GIT_COMMAND_INIT: &str = "init";
 const GIT_COMMAND_CAT_FILE: &str = "cat-file";
 const GIT_COMMAND_HASH_OBJECT: &str = "hash-object";
+const GIT_COMMAND_LS_TREE: &str = "ls-tree";
 
 const GIT_OBJECTS_FOLDER_PATH: &str = ".git/objects";
 
@@ -82,6 +83,7 @@ fn main() {
         GIT_COMMAND_INIT => git_init(),
         GIT_COMMAND_CAT_FILE => git_cat_file(&args),
         GIT_COMMAND_HASH_OBJECT => git_hash_object(&args),
+        GIT_COMMAND_LS_TREE => git_ls_tree(&args),
         _ => println!("unknown command: {}", args[1]),
     }
 
