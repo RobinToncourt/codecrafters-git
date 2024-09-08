@@ -1,16 +1,24 @@
 #[allow(unused_imports)]
 use std::env;
-#[allow(unused_imports)]
 use std::fs;
 use std::fs::File;
+use std::fs::OpenOptions;
 
 use std::io::prelude::*;
 use flate2::read::ZlibDecoder;
+use flate2::Compression;
+use flate2::write::ZlibEncoder;
+
+use crypto::digest::Digest;
+use crypto::sha1::Sha1;
 
 const GIT_COMMAND_INIT: &str = "init";
 const GIT_COMMAND_CAT_FILE: &str = "cat-file";
+const GIT_COMMAND_HASH_OBJECT: &str = "hash-object";
 
-const GIT_OBJECTS_FOLDER_PATH: &str = ".git/objects/";
+const GIT_OBJECTS_FOLDER_PATH: &str = ".git/objects";
+
+const GIT_OBJECT_TYPE_BLOB: &str = "blob";
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -23,6 +31,7 @@ fn main() {
     match args[1].as_str() {
         GIT_COMMAND_INIT => git_init(),
         GIT_COMMAND_CAT_FILE => git_cat_file(&args),
+        GIT_COMMAND_HASH_OBJECT => git_hash_object(&args),
         _ => println!("unknown command: {}", args[1]),
     }
 
@@ -42,16 +51,16 @@ fn git_cat_file(args: &Vec<String>) {
         return;
     }
 
-    let option: &str = args[2].as_str();
+    let option: &str = &args[2];
     match option {
         "-p" => {},
         _ => {
             println!("Invalid option.");
             return;
-        }
+        },
     }
 
-    let hash: &str = args[3].as_str();
+    let hash: &str = &args[3];
     let file_path: String = hash_to_path(hash);
 
     // Open file.
@@ -61,9 +70,9 @@ fn git_cat_file(args: &Vec<String>) {
     };
 
     // Uncompress file with flate 2(?).
-    let mut d = ZlibDecoder::new(file);
+    let mut zlib_decoder = ZlibDecoder::new(file);
     let mut decompress_file_content = String::new();
-    let Ok(_) = d.read_to_string(&mut decompress_file_content) else {
+    let Ok(_) = zlib_decoder.read_to_string(&mut decompress_file_content) else {
         println!("Invalid UTF-8.");
         return;
     };
@@ -111,11 +120,84 @@ fn git_cat_file_split_file(
 }
 
 fn hash_to_path(hash: &str) -> String {
-    let mut path: String = String::from(GIT_OBJECTS_FOLDER_PATH);
+    format!("{GIT_OBJECTS_FOLDER_PATH}/{}/{}", &hash[..2], &hash[2..])
+}
 
-    path.push_str(&hash[..2]);
-    path.push('/');
-    path.push_str(&hash[2..]);
+fn git_hash_object(args: &Vec<String>) {
+    if args.len() < 3 {
+        println!("git hash-objects needs 1 argument.");
+        return;
+    }
 
-    path
+    let option: &str = &args[2];
+    match option {
+        "-w" => {},
+        _ => {
+            println!("Invalid option.");
+            return;
+        },
+    }
+
+    let file_path = &args[3];
+    let Ok(content) = fs::read_to_string(file_path) else {
+        println!("File does not exist: {file_path}");
+        return;
+    };
+
+    let size = content.len();
+    let object = format!("{GIT_OBJECT_TYPE_BLOB} {size}\0{content}");
+
+    let mut hasher = Sha1::new();
+    hasher.input_str(&object);
+    let sha_hash = hasher.result_str();
+
+    println!("{sha_hash}");
+
+    let mut zlib_encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    match zlib_encoder.write_all(content.into_bytes().as_slice()) {
+        Ok(()) => {},
+        Err(error) => {
+            println!("An error occured: {error}");
+            return;
+        },
+    }
+
+    let compress_object = match zlib_encoder.finish() {
+        Ok(compress) => compress,
+        Err(error) => {
+            println!("An error occured: {error}");
+            return;
+        },
+    };
+
+    match option {
+        "-w" => write_object(&sha_hash, compress_object),
+        _ => panic!("Impossible, option checked before."),
+    }
+}
+
+fn write_object(sha_hash: &str, compress_object: Vec<u8>) {
+    let folder: &str = &sha_hash[..2];
+    let file_name: &str = &sha_hash[2..];
+
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&format!("{GIT_OBJECTS_FOLDER_PATH}/{folder}/{file_name}"));
+
+    let mut file = match file {
+        Ok(file) => file,
+        Err(error) => {
+            println!("An error occured: {error}");
+            return;
+        },
+    };
+
+    match file.write_all(&compress_object) {
+        Ok(()) => {},
+        Err(error) => {
+            println!("An error occured: {error}");
+            return;
+        },
+    }
 }
