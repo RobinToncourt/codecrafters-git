@@ -154,7 +154,7 @@ fn git_hash_object(args: &Vec<String>) {
     println!("{sha_hash}");
 
     let mut zlib_encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-    match zlib_encoder.write_all(content.into_bytes().as_slice()) {
+    match zlib_encoder.write_all(object.into_bytes().as_slice()) {
         Ok(()) => {},
         Err(error) => {
             println!("An error occured: {error}");
