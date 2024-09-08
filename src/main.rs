@@ -180,6 +180,14 @@ fn write_object(sha_hash: &str, compress_object: Vec<u8>) {
     let folder: &str = &sha_hash[..2];
     let file_name: &str = &sha_hash[2..];
 
+    match fs::create_dir_all(&format!("{GIT_OBJECTS_FOLDER_PATH}/{folder}")) {
+        Ok(()) => {},
+        Err(error) => {
+            println!("An error occured: {error}");
+            return;
+        },
+    }
+
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
