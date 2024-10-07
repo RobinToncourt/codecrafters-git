@@ -1,75 +1,114 @@
 #![allow(dead_code)]
-#[allow(unused_imports)]
+
 use std::env;
-use std::fmt;
 
 use std::fs;
 use std::fs::File;
-use std::fs::OpenOptions;
 
-use std::io::prelude::*;
+use std::io::Read;
+use std::io::Write;
+
 use flate2::read::ZlibDecoder;
-use flate2::Compression;
 use flate2::write::ZlibEncoder;
+
+use flate2::Compression;
 
 use crypto::digest::Digest;
 use crypto::sha1::Sha1;
+
+#[derive(Debug)]
+enum GitError {
+    FailedToReadGitObjectFile(String),
+    InvalidGitObject,
+    ZlibDecompressionFailed(String),
+    InvalidDecompressSize,
+    UnknownGitType,
+}
+
+struct GitObjectParts {
+    git_type: String,
+    size: usize,
+    content: String,
+}
+
+#[derive(Debug)]
+enum GitObject {
+    Blob { content: String },
+    Tree { content: Vec<TreeEntry> },
+    Commit,
+}
+
+impl GitObject {
+    fn from_parts(parts: GitObjectParts) -> Result<Self, GitError> {
+        if parts.size != parts.content.len() {
+            return Err(GitError::InvalidGitObject);
+        }
+
+        match parts.git_type.as_str() {
+            "blob" => Ok(GitObject::Blob {
+                content: parts.content,
+            }),
+            "tree" => {
+                let content: Vec<TreeEntry> = parse_str_tree_entry_vec(&parts.content)?;
+                Ok(GitObject::Tree { content })
+            }
+            _ => Err(GitError::UnknownGitType),
+        }
+    }
+
+    fn create_blob_with_content(content: String) -> Self {
+        GitObject::Blob { content }
+    }
+
+    fn as_string(&self) -> String {
+        match self {
+            GitObject::Blob { content } => format!("blob {}\0{content}", content.len()),
+            _ => unimplemented!(),
+        }
+    }
+
+    fn get_type(&self) -> String {
+        match self {
+            GitObject::Blob { .. } => "blob".to_string(),
+            GitObject::Tree { .. } => "tree".to_string(),
+            GitObject::Commit => "commit".to_string(),
+        }
+    }
+
+    fn get_size(&self) -> usize {
+        match self {
+            GitObject::Blob { content } => content.len(),
+            _ => unimplemented!(),
+        }
+    }
+
+    fn get_content(&self) -> &str {
+        match self {
+            GitObject::Blob { content } => content,
+            _ => unimplemented!(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TreeEntry {
+    mode: EntryMode,
+    name: String,
+    sha1_hash: String,
+}
+
+#[derive(Debug)]
+enum EntryMode {
+    RegularFile = 100644,
+    ExecutableFile = 100755,
+    SymbolicLink = 120000,
+    Directory = 40000,
+}
 
 const GIT_COMMAND_INIT: &str = "init";
 const GIT_COMMAND_CAT_FILE: &str = "cat-file";
 const GIT_COMMAND_HASH_OBJECT: &str = "hash-object";
 const GIT_COMMAND_LS_TREE: &str = "ls-tree";
-
-const GIT_OBJECTS_FOLDER_PATH: &str = ".git/objects";
-
-const GIT_OBJECT_TYPE_BLOB: &str = "blob";
-
-enum ObjectType {
-    Blob,
-    Tree,
-    Commit,
-}
-
-impl ObjectType {
-    fn from_str(s: &str) -> Self {
-        match s {
-            "blob" => ObjectType::Blob,
-            "tree" => ObjectType::Tree,
-            "commit" => ObjectType::Commit,
-            _ => panic!("Invalid object type: {s}"),
-        }
-    }
-}
-
-impl fmt::Display for ObjectType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Self::Blob => write!(f, "blob"),
-            Self::Tree => write!(f, "tree"),
-            Self::Commit => write!(f, "commit"),
-        }
-    }
-}
-
-struct Object {
-    typ: ObjectType,
-    size: usize,
-    content: String,
-}
-
-impl Object {
-    fn from_file(_file_path: &str) -> Self {
-        // let file = File::open(&file_path)?;
-        //
-        // let mut zlib_decoder = ZlibDecoder::new(file);
-        // let mut decompress_file_content = String::new();
-        // zlib_decoder.read_to_string(&mut decompress_file_content)?;
-        //
-        // let (object, size, content) = git_parse_file(&decompress_file_content)?;
-
-        todo!()
-    }
-}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -81,12 +120,11 @@ fn main() {
 
     match args[1].as_str() {
         GIT_COMMAND_INIT => git_init(),
-        GIT_COMMAND_CAT_FILE => git_cat_file(&args),
-        GIT_COMMAND_HASH_OBJECT => git_hash_object(&args),
-        GIT_COMMAND_LS_TREE => git_ls_tree(&args),
+        GIT_COMMAND_CAT_FILE => git_cat_file(&args[..]),
+        GIT_COMMAND_HASH_OBJECT => git_hash_object(&args[..]),
+        GIT_COMMAND_LS_TREE => git_ls_tree(&args[..]),
         _ => println!("unknown command: {}", args[1]),
     }
-
 }
 
 fn git_init() {
@@ -97,289 +135,260 @@ fn git_init() {
     println!("Initialized git directory");
 }
 
-fn git_cat_file(args: &Vec<String>) {
-    if args.len() < 4 {
+fn git_cat_file(args: &[String]) {
+    if args.len() < 3 {
         println!("git cat-file needs 2 arguments.");
         return;
     }
 
-    let option: &str = &args[2];
-    match option {
-        "-p" => {},
-        _ => {
-            println!("Invalid option.");
-            return;
-        },
-    }
-
-    let hash: &str = &args[3];
-    let file_path: String = hash_to_path(hash);
-
-    // Open file.
-    let Ok(file) = File::open(&file_path) else {
-        println!("File does not exist: {file_path}");
-        return;
+    let (option, blob_sha): (Option<&str>, &str) = if args.len() == 3 {
+        (None, args[2].as_str())
+    } else {
+        (Some(args[2].as_str()), args[3].as_str())
     };
 
-    // Uncompress file with flate 2(?).
-    let mut zlib_decoder = ZlibDecoder::new(file);
-    let mut decompress_file_content = String::new();
-    let Ok(_) = zlib_decoder.read_to_string(&mut decompress_file_content) else {
-        println!("Invalid UTF-8.");
-        return;
-    };
+    let (folder_path, file_name): (String, String) = sha1_to_file_path(blob_sha);
+    let file_path: String = format!("{folder_path}/{file_name}");
 
-    // Read header, size and content.
-    let (_object_type, size, content) =
-        match git_parse_file(&decompress_file_content) {
-            Ok((header, size, content)) => (header, size, content),
-            Err(err_message) => {
-                println!("{err_message}");
-                return;
-            }
-        };
-
-    if size != content.len() {
-        println!(
-            "Sizes do not match, size={size}, content size={}", content.len()
-        );
-    }
-
-    match option {
-        "-p" => print!("{content}"),
-        _ => panic!("Impossible, option checked before."),
-    }
-}
-
-fn git_parse_file(
-    decompress_file_content: &str
-) -> Result<(&str, usize, &str), String> {
-    let split: Vec<&str> = decompress_file_content.split('\0').collect();
-
-    if split.len() != 2 {
-        return Err(format!("Invalid object type."));
-    }
-
-    let Some((object_type, size)) = split[0].split_once(' ') else {
-        return Err(format!("Invalid header: {}", split[0]));
-    };
-    let Ok(size) = size.parse::<usize>() else {
-        return Err(format!("Invalid size: {size}"));
-    };
-    let content = split[1];
-
-    Ok((object_type, size, content))
-}
-
-fn hash_to_path(hash: &str) -> String {
-    format!("{GIT_OBJECTS_FOLDER_PATH}/{}/{}", &hash[..2], &hash[2..])
-}
-
-fn git_hash_object(args: &Vec<String>) {
-    if args.len() < 3 {
-        println!("git hash-objects needs 1 argument.");
-        return;
-    }
-
-    let option: &str = &args[2];
-    match option {
-        "-w" => {},
-        _ => {
-            println!("Invalid option.");
-            return;
-        },
-    }
-
-    let file_path = &args[3];
-    let Ok(content) = fs::read_to_string(file_path) else {
-        println!("File does not exist: {file_path}");
-        return;
-    };
-
-    let size = content.len();
-    let object = format!("{} {size}\0{content}", ObjectType::Blob);
-
-    let mut hasher = Sha1::new();
-    hasher.input_str(&object);
-    let sha_hash = hasher.result_str();
-
-    println!("{sha_hash}");
-
-    let mut zlib_encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-    match zlib_encoder.write_all(object.into_bytes().as_slice()) {
-        Ok(()) => {},
-        Err(error) => {
-            println!("An error occured: {error}");
-            return;
-        },
-    }
-
-    let compress_object = match zlib_encoder.finish() {
-        Ok(compress) => compress,
-        Err(error) => {
-            println!("An error occured: {error}");
-            return;
-        },
-    };
-
-    match option {
-        "-w" => write_object(&sha_hash, compress_object),
-        _ => panic!("Impossible, option checked before."),
-    }
-}
-
-fn write_object(sha_hash: &str, compress_object: Vec<u8>) {
-    let folder: &str = &sha_hash[..2];
-    let file_name: &str = &sha_hash[2..];
-
-    match fs::create_dir_all(&format!("{GIT_OBJECTS_FOLDER_PATH}/{folder}")) {
-        Ok(()) => {},
-        Err(error) => {
-            println!("An error occured: {error}");
-            return;
-        },
-    }
-
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&format!("{GIT_OBJECTS_FOLDER_PATH}/{folder}/{file_name}"));
-
-    let mut file = match file {
+    let file: File = match File::open(file_path) {
         Ok(file) => file,
-        Err(error) => {
-            println!("An error occured: {error}");
+        Err(err) => {
+            println!("File::open: {err}");
             return;
-        },
+        }
     };
 
-    match file.write_all(&compress_object) {
-        Ok(()) => {},
-        Err(error) => {
-            println!("An error occured: {error}");
+    let bytes: Vec<u8> = match get_file_bytes(file) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            println!("get_file_bytes: {err}");
             return;
-        },
-    }
-}
-
-fn git_ls_tree(args: &Vec<String>) {
-    if args.len() < 3 {
-        println!("git ls-tree needs 1 argument.");
-        return;
-    }
-
-    let (option, tree_sha): (Option<&str>, &str) = if args.len() == 3 {
-        (None, &args[2])
-    }
-    else {
-        (Some(&args[2]), &args[3])
+        }
     };
 
-    let file_path = hash_to_path(tree_sha);
-
-    let Ok(file) = File::open(&file_path) else {
-        println!("File does not exist: {file_path}");
-        return;
+    let decompressed_file_content: String = match zlib_decompression(&bytes[..]) {
+        Ok(s) => s,
+        Err(err) => {
+            println!("zlib_decompression: {err}");
+            return;
+        }
     };
 
-    let mut zlib_decoder = ZlibDecoder::new(file);
-    let mut decompress_file_content = String::new();
-    let Ok(_) = zlib_decoder.read_to_string(&mut decompress_file_content) else {
-        println!("Invalid UTF-8.");
-        return;
-    };
-
-    let (object_type, size, content): (&str, usize, &str) =
-        match git_parse_file(&decompress_file_content) {
-            Ok((header, size, content)) => (header, size, content),
-            Err(err_message) => {
-                println!("{err_message}");
+    let git_object_parts: GitObjectParts =
+        match parse_str_to_git_object_parts(&decompressed_file_content) {
+            Ok(parts) => parts,
+            Err(err) => {
+                println!("parse_str_to_git_object_parts: {err:?}");
                 return;
             }
         };
 
-    if !object_type.eq("tree") {
-        println!("Not a tree object.");
+    let git_object: GitObject = match GitObject::from_parts(git_object_parts) {
+        Ok(git_object) => git_object,
+        Err(err) => {
+            println!("GitObject::from_parts: {err:?}");
+            return;
+        }
+    };
+
+    if let Some(option) = option {
+        if option.eq("-p") {
+            print!("{}", git_object.get_content());
+        }
+    }
+}
+
+fn git_hash_object(args: &[String]) {
+    if args.len() < 3 {
+        println!("git hash-object needs 2 arguments.");
         return;
     }
 
-    if size != content.len() {
-        println!(
-            "Sizes do not match, size={size}, content size={}", content.len()
-        );
-    }
-
-    let tree_object_entry_list = tfcttoel(content);
-
-    let only_name: bool = match option {
-        Some(flag) => flag.eq("--name-only"),
-        None => false,
+    let (option, file_path): (Option<&str>, &str) = if args.len() == 3 {
+        (None, args[2].as_str())
+    } else {
+        (Some(args[2].as_str()), args[3].as_str())
     };
 
-    for entry in tree_object_entry_list {
-        if only_name {
-            println!("{}", entry.name);
+    let mut file: File = match File::open(file_path) {
+        Ok(file) => file,
+        Err(err) => {
+            println!("File::open: {err}");
+            return;
         }
-        else {
-            println!(
-                "{} {} {}  {}",
-                entry.mode, entry.typ, entry.sha, entry.name
-            );
+    };
+
+    let mut content: String = String::new();
+    let _read_bytes: usize = match file.read_to_string(&mut content) {
+        Ok(read_bytes) => read_bytes,
+        Err(err) => {
+            println!("File::read_to_string: {err}");
+            return;
+        }
+    };
+
+    let git_object = GitObject::create_blob_with_content(content);
+    let str_git_object: String = git_object.as_string();
+    let sha1_hash: String = compute_sha1_hash(&str_git_object);
+    let bytes: Vec<u8> = match zlib_compression(&str_git_object) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            println!("zlib_compression: {err}");
+            return;
+        }
+    };
+
+    if let Some(option) = option {
+        if option.eq("-w") {
+            let (folder_path, file_name): (String, String) = sha1_to_file_path(&sha1_hash);
+            match write_bytes_to_file(&folder_path, &file_name, &bytes[..]) {
+                Ok(()) => {}
+                Err(err) => {
+                    println!("write_bytes_to_file: {err}");
+                }
+            }
         }
     }
+
+    println!("{sha1_hash}");
 }
 
-struct TreeObjectEntry {
-    mode: String,
-    typ: String,
-    sha: String,
-    name: String,
-}
-
-enum TreeObjectMode {
-    RegularFile     = 100664,
-    ExecutableFile  = 100755,
-    SymbolicFile    = 120000,
-
-    Directory       = 040000,
-}
-
-use tree_file_content_to_tree_object_entry_list as tfcttoel;
-fn tree_file_content_to_tree_object_entry_list(
-    content: &str,
-) -> Vec<TreeObjectEntry> {
-    let entry_pos_list: Vec<usize> =
-        content.match_indices("\0").map(|(pos, _)| pos+20).collect();
-
-    let mut entry_str_list: Vec<&str> = Vec::new();
-    let mut content_remain = content;
-    for index in entry_pos_list {
-        let (first, last) = content_remain.split_at(index);
-        entry_str_list.push(first);
-        content_remain = last;
+fn git_ls_tree(args: &[String]) {
+    if args.len() < 3 {
+        println!("git ls-tree needs at least 2 arguments.");
+        return;
     }
 
-    entry_str_list.into_iter().map(str_entry_to_tree_object_entry).collect()
+    let (option, blob_sha): (Option<&str>, &str) = if args.len() == 3 {
+        (None, args[2].as_str())
+    } else {
+        (Some(args[2].as_str()), args[3].as_str())
+    };
+
+    let (folder_path, file_name): (String, String) = sha1_to_file_path(blob_sha);
+    let file_path: String = format!("{folder_path}/{file_name}");
+
+    let file: File = match File::open(file_path) {
+        Ok(file) => file,
+        Err(err) => {
+            println!("File::open: {err}");
+            return;
+        }
+    };
+
+    let bytes: Vec<u8> = match get_file_bytes(file) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            println!("get_file_bytes: {err}");
+            return;
+        }
+    };
+
+    let decompressed_file_content: String = match zlib_decompression(&bytes[..]) {
+        Ok(s) => s,
+        Err(err) => {
+            println!("zlib_decompression: {err}");
+            return;
+        }
+    };
+
+    let git_object_parts: GitObjectParts =
+    match parse_str_to_git_object_parts(&decompressed_file_content) {
+        Ok(parts) => parts,
+        Err(err) => {
+            println!("parse_str_to_git_object_parts: {err:?}");
+            return;
+        }
+    };
+
+    let git_object: GitObject = match GitObject::from_parts(git_object_parts) {
+        Ok(git_object) => git_object,
+        Err(err) => {
+            println!("GitObject::from_parts: {err:?}");
+            return;
+        }
+    };
+
+    todo!()
 }
 
-fn str_entry_to_tree_object_entry(str_entry: &str) -> TreeObjectEntry {
-    // <mode> <name>\0<20_byte_sha>
-    let split: Vec<&str> = str_entry.split('\0').collect();
+const GIT_OBJECT_FOLDER_PATH: &str = ".git/objects";
 
-    let (mode, name) = split[0].split_once(' ').unwrap();
-    let sha = split[1];
+fn sha1_to_file_path(hash: &str) -> (String, String) {
+    let folder_path = format!("{GIT_OBJECT_FOLDER_PATH}/{}", &hash[..2]);
+    let file_name = (hash[2..]).to_string();
+    (folder_path, file_name)
+}
 
-    let (typ, _, _) = git_parse_file(sha).unwrap();
+fn get_file_bytes(mut file: File) -> std::io::Result<Vec<u8>> {
+    let mut buffer: Vec<u8> = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    Ok(buffer)
+}
 
-    TreeObjectEntry {
-        mode: String::from(mode),
-        typ: String::from(typ),
-        sha: String::from(sha),
-        name: String::from(name),
+fn zlib_decompression(bytes: &[u8]) -> std::io::Result<String> {
+    let mut zlib_decoder = ZlibDecoder::new(bytes);
+    let mut content: String = String::new();
+    zlib_decoder.read_to_string(&mut content)?;
+    Ok(content)
+}
+
+fn zlib_compression(content: &str) -> std::io::Result<Vec<u8>> {
+    let mut zlib_encode = ZlibEncoder::new(Vec::new(), Compression::default());
+    zlib_encode.write_all(content.as_bytes())?;
+    zlib_encode.finish()
+}
+
+fn parse_str_to_git_object_parts(s: &str) -> Result<GitObjectParts, GitError> {
+    let Some((first, content)): Option<(&str, &str)> = s.split_once("\0") else {
+        return Err(GitError::InvalidGitObject);
+    };
+
+    let Some((git_type, size)): Option<(&str, &str)> = first.split_once(" ") else {
+        return Err(GitError::InvalidGitObject);
+    };
+
+    let git_type: String = git_type.to_string();
+    let Ok(size): Result<usize, _> = size.parse::<usize>() else {
+        return Err(GitError::InvalidGitObject);
+    };
+    let content: String = content.to_string();
+
+    Ok(GitObjectParts {
+        git_type,
+        size,
+        content,
+    })
+}
+
+fn parse_str_tree_entry_vec(content: &str) -> Result<Vec<TreeEntry>, GitError> {
+    todo!()
+}
+
+fn compute_sha1_hash(content: &str) -> String {
+    let mut hasher = Sha1::new();
+    hasher.input_str(content);
+    hasher.result_str()
+}
+
+fn write_bytes_to_file(folder_path: &str, file_name: &str, content: &[u8]) -> std::io::Result<()> {
+    fs::create_dir_all(folder_path)?;
+    let mut file = File::create_new(format!("{folder_path}/{file_name}"))?;
+    file.write_all(content)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_git_type_fmt() {
+        let expected: String = String::from("blob");
+        let blob: GitObject = GitObject::Blob {
+            content: String::from("Content."),
+        };
+
+        assert_eq!(expected, blob.get_type());
     }
 }
-
-
-
-
-
