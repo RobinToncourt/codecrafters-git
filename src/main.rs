@@ -25,10 +25,10 @@ enum GitError {
     UnknownGitType,
 }
 
-struct GitObjectParts {
+struct GitObjectParts<T> {
     git_type: String,
     size: usize,
-    content: String,
+    content: T,
 }
 
 #[derive(Debug)]
@@ -39,7 +39,7 @@ enum GitObject {
 }
 
 impl GitObject {
-    fn from_parts(parts: GitObjectParts) -> Result<Self, GitError> {
+    fn from_parts_string(parts: GitObjectParts<String>) -> Result<Self, GitError> {
         if parts.size != parts.content.len() {
             return Err(GitError::InvalidGitObject);
         }
@@ -48,6 +48,16 @@ impl GitObject {
             "blob" => Ok(GitObject::Blob {
                 content: parts.content,
             }),
+            _ => Err(GitError::UnknownGitType),
+        }
+    }
+
+    fn from_parts_bytes(parts: GitObjectParts<Vec<u8>>) -> Result<Self, GitError> {
+        if parts.size != parts.content.len() {
+            return Err(GitError::InvalidGitObject);
+        }
+
+        match parts.git_type.as_str() {
             "tree" => {
                 let content: Vec<TreeEntry> = parse_str_tree_entry_vec(&parts.content)?;
                 Ok(GitObject::Tree { content })
@@ -166,7 +176,7 @@ fn git_cat_file(args: &[String]) {
         }
     };
 
-    let decompressed_file_content: String = match zlib_decompression(&bytes[..]) {
+    let decompressed_bytes: Vec<u8> = match zlib_decompression(&bytes[..]) {
         Ok(s) => s,
         Err(err) => {
             println!("zlib_decompression: {err}");
@@ -174,8 +184,16 @@ fn git_cat_file(args: &[String]) {
         }
     };
 
-    let git_object_parts: GitObjectParts =
-        match parse_str_to_git_object_parts(&decompressed_file_content) {
+    let content: String = match String::from_utf8(decompressed_bytes) {
+        Ok(s) => s,
+        Err(err) => {
+            println!("String::from_utf8: {err}");
+            return;
+        }
+    };
+
+    let git_object_parts: GitObjectParts<String> =
+        match parse_str_to_git_object_parts_string(&content) {
             Ok(parts) => parts,
             Err(err) => {
                 println!("parse_str_to_git_object_parts: {err:?}");
@@ -183,7 +201,7 @@ fn git_cat_file(args: &[String]) {
             }
         };
 
-    let git_object: GitObject = match GitObject::from_parts(git_object_parts) {
+    let git_object: GitObject = match GitObject::from_parts_string(git_object_parts) {
         Ok(git_object) => git_object,
         Err(err) => {
             println!("GitObject::from_parts: {err:?}");
@@ -284,7 +302,7 @@ fn git_ls_tree(args: &[String]) {
         }
     };
 
-    let decompressed_file_content: String = match zlib_decompression(&bytes[..]) {
+    let decompressed_bytes: Vec<u8> = match zlib_decompression(&bytes[..]) {
         Ok(s) => s,
         Err(err) => {
             println!("zlib_decompression: {err}");
@@ -292,16 +310,16 @@ fn git_ls_tree(args: &[String]) {
         }
     };
 
-    let git_object_parts: GitObjectParts =
-    match parse_str_to_git_object_parts(&decompressed_file_content) {
-        Ok(parts) => parts,
-        Err(err) => {
-            println!("parse_str_to_git_object_parts: {err:?}");
-            return;
-        }
-    };
+    let git_object_parts: GitObjectParts<Vec<u8>> =
+        match parse_str_to_git_object_parts_bytes(&decompressed_bytes) {
+            Ok(parts) => parts,
+            Err(err) => {
+                println!("parse_str_to_git_object_parts: {err:?}");
+                return;
+            }
+        };
 
-    let git_object: GitObject = match GitObject::from_parts(git_object_parts) {
+    let git_object: GitObject = match GitObject::from_parts_bytes(git_object_parts) {
         Ok(git_object) => git_object,
         Err(err) => {
             println!("GitObject::from_parts: {err:?}");
@@ -326,10 +344,10 @@ fn get_file_bytes(mut file: File) -> std::io::Result<Vec<u8>> {
     Ok(buffer)
 }
 
-fn zlib_decompression(bytes: &[u8]) -> std::io::Result<String> {
+fn zlib_decompression(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
     let mut zlib_decoder = ZlibDecoder::new(bytes);
-    let mut content: String = String::new();
-    zlib_decoder.read_to_string(&mut content)?;
+    let mut content: Vec<u8> = Vec::new();
+    zlib_decoder.read_to_end(&mut content)?;
     Ok(content)
 }
 
@@ -339,7 +357,7 @@ fn zlib_compression(content: &str) -> std::io::Result<Vec<u8>> {
     zlib_encode.finish()
 }
 
-fn parse_str_to_git_object_parts(s: &str) -> Result<GitObjectParts, GitError> {
+fn parse_str_to_git_object_parts_string(s: &str) -> Result<GitObjectParts<String>, GitError> {
     let Some((first, content)): Option<(&str, &str)> = s.split_once("\0") else {
         return Err(GitError::InvalidGitObject);
     };
@@ -361,7 +379,46 @@ fn parse_str_to_git_object_parts(s: &str) -> Result<GitObjectParts, GitError> {
     })
 }
 
-fn parse_str_tree_entry_vec(content: &str) -> Result<Vec<TreeEntry>, GitError> {
+fn parse_str_to_git_object_parts_bytes(s: &[u8]) -> Result<GitObjectParts<Vec<u8>>, GitError> {
+    let mut git_type = String::new();
+
+    let mut index: usize = 0;
+    loop {
+        if s[index].eq(&b' ') {
+            break;
+        }
+
+        git_type.push(s[index] as char);
+        index += 1;
+    }
+    index += 1;
+
+    let mut size = String::new();
+
+    loop {
+        if s[index].eq(&b' ') {
+            break;
+        }
+
+        size.push(s[index] as char);
+        index += 1;
+    }
+    index += 1;
+
+    let Ok(size): Result<usize, _> = size.parse::<usize>() else {
+        return Err(GitError::InvalidGitObject);
+    };
+
+    let content: Vec<u8> = s[index..s.len()].to_vec();
+
+    Ok(GitObjectParts {
+        git_type,
+        size,
+        content,
+    })
+}
+
+fn parse_str_tree_entry_vec(content: &[u8]) -> Result<Vec<TreeEntry>, GitError> {
     todo!()
 }
 
