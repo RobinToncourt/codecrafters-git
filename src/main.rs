@@ -142,7 +142,7 @@ fn parse_tree_entry_bytes(teb: &[u8]) -> Result<(usize, String, String), GitErro
 
     let mode: usize = match mode.parse::<usize>() {
         Ok(value) => value,
-        Err(err) => return Err(GitError::InvalidTreeEntry),
+        Err(_err) => return Err(GitError::InvalidTreeEntry),
     };
 
     let mut name = String::new();
@@ -165,7 +165,7 @@ fn parse_tree_entry_bytes(teb: &[u8]) -> Result<(usize, String, String), GitErro
 
 fn bytes_slice_to_hex(slice: &[u8]) -> String {
     let hex: String = format!("{slice:02x?}");
-    hex.replace(", ", "").replace('[', "").replace(']', "")
+    hex.replace(", ", "").replace(['[', ']'], "")
 }
 
 #[derive(Debug)]
@@ -409,9 +409,6 @@ fn git_ls_tree(args: &[String]) {
             println!("Unknow option {option}.");
         }
     }
-    else {
-
-    }
 }
 
 const GIT_OBJECT_FOLDER_PATH: &str = ".git/objects";
@@ -505,7 +502,7 @@ fn parse_str_to_git_object_parts_bytes(s: &[u8]) -> Result<GitObjectParts<Vec<u8
 }
 
 fn parse_str_tree_entry_vec(content: &[u8]) -> Result<Vec<TreeEntry>, GitError> {
-    let pos: Vec<usize> = tree_entry_end_pos(&content);
+    let pos: Vec<usize> = tree_entry_end_pos(content);
     let tree_entry_bytes: Vec<&[u8]> = extract_from_vec_at(content, &pos[..]);
 
     let mut tree_entry: Vec<TreeEntry> = Vec::new();
@@ -523,8 +520,8 @@ fn parse_str_tree_entry_vec(content: &[u8]) -> Result<Vec<TreeEntry>, GitError> 
 fn tree_entry_end_pos(v: &[u8]) -> Vec<usize> {
     v.iter()
         .enumerate()
-        .filter(|(i, &byte)| byte == b'\0')
-        .map(|(i, byte)| i + 21)
+        .filter(|(_, &byte)| byte == b'\0')
+        .map(|(i, _)| i + 21)
         .collect::<Vec<usize>>()
 }
 
