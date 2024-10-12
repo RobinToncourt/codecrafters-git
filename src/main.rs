@@ -23,6 +23,8 @@ enum GitError {
     ZlibDecompressionFailed(String),
     InvalidDecompressSize,
     UnknownGitType,
+    UnknownEntryMode,
+    InvalidTreeEntry,
 }
 
 struct GitObjectParts<T> {
@@ -92,9 +94,16 @@ impl GitObject {
         }
     }
 
-    fn get_content(&self) -> &str {
+    fn get_blob_content(&self) -> &str {
         match self {
             GitObject::Blob { content } => content,
+            _ => unimplemented!(),
+        }
+    }
+
+    fn get_tree_content(&self) -> &Vec<TreeEntry> {
+        match self {
+            GitObject::Tree { content } => content,
             _ => unimplemented!(),
         }
     }
@@ -107,12 +116,76 @@ struct TreeEntry {
     sha1_hash: String,
 }
 
+impl TreeEntry {
+    fn from_bytes(bytes: &[u8]) -> Result<Self, GitError> {
+        let Ok((mode, name, byte_sha_hex)) = parse_tree_entry_bytes(bytes) else {
+            return Err(GitError::InvalidGitObject);
+        };
+        let mode = EntryMode::from_mode_value(mode)?;
+        Ok(Self{ mode, name, sha1_hash: byte_sha_hex })
+    }
+}
+
+fn parse_tree_entry_bytes(teb: &[u8]) -> Result<(usize, String, String), GitError> {
+    let mut mode = String::new();
+
+    let mut index: usize = 0;
+    loop {
+        if teb[index].eq(&b' ') {
+            break;
+        }
+
+        mode.push(teb[index] as char);
+        index += 1;
+    }
+    index += 1;
+
+    let mode: usize = match mode.parse::<usize>() {
+        Ok(value) => value,
+        Err(err) => return Err(GitError::InvalidTreeEntry),
+    };
+
+    let mut name = String::new();
+
+    loop {
+        if teb[index].eq(&b'\0') {
+            break;
+        }
+
+        name.push(teb[index] as char);
+        index += 1;
+    }
+    index += 1;
+
+    let byte_sha: Vec<u8> = teb[index..teb.len()].to_vec();
+    let byte_sha_hex: String = bytes_slice_to_hex(&byte_sha[..]);
+
+    Ok((mode, name, byte_sha_hex))
+}
+
+fn bytes_slice_to_hex(slice: &[u8]) -> String {
+    let hex: String = format!("{slice:02x?}");
+    hex.replace(", ", "").replace('[', "").replace(']', "")
+}
+
 #[derive(Debug)]
 enum EntryMode {
     RegularFile = 100644,
     ExecutableFile = 100755,
     SymbolicLink = 120000,
     Directory = 40000,
+}
+
+impl EntryMode {
+    fn from_mode_value(value: usize) -> Result<Self, GitError> {
+        match value {
+            100644 => Ok(EntryMode::RegularFile),
+            100755 => Ok(EntryMode::ExecutableFile),
+            120000 => Ok(EntryMode::SymbolicLink),
+            40000 => Ok(EntryMode::Directory),
+            _ => Err(GitError::UnknownEntryMode)
+        }
+    }
 }
 
 const GIT_COMMAND_INIT: &str = "init";
@@ -211,7 +284,7 @@ fn git_cat_file(args: &[String]) {
 
     if let Some(option) = option {
         if option.eq("-p") {
-            print!("{}", git_object.get_content());
+            print!("{}", git_object.get_blob_content());
         }
     }
 }
@@ -327,7 +400,18 @@ fn git_ls_tree(args: &[String]) {
         }
     };
 
-    todo!()
+    if let Some(option) = option {
+        if option.eq("--name-only") {
+            let tree_entry: &Vec<TreeEntry> = git_object.get_tree_content();
+            tree_entry.iter().for_each(|te| println!("{}", te.name));
+        }
+        else {
+            println!("Unknow option {option}.");
+        }
+    }
+    else {
+
+    }
 }
 
 const GIT_OBJECT_FOLDER_PATH: &str = ".git/objects";
@@ -393,17 +477,19 @@ fn parse_str_to_git_object_parts_bytes(s: &[u8]) -> Result<GitObjectParts<Vec<u8
     }
     index += 1;
 
-    let mut size = String::new();
+    let mut size_bytes: Vec<u8> = Vec::new();
 
     loop {
-        if s[index].eq(&b' ') {
+        if s[index].eq(&b'\0') {
             break;
         }
 
-        size.push(s[index] as char);
+        size_bytes.push(s[index]);
         index += 1;
     }
     index += 1;
+
+    let size: String = String::from_utf8(size_bytes).unwrap();
 
     let Ok(size): Result<usize, _> = size.parse::<usize>() else {
         return Err(GitError::InvalidGitObject);
@@ -419,7 +505,40 @@ fn parse_str_to_git_object_parts_bytes(s: &[u8]) -> Result<GitObjectParts<Vec<u8
 }
 
 fn parse_str_tree_entry_vec(content: &[u8]) -> Result<Vec<TreeEntry>, GitError> {
-    todo!()
+    let pos: Vec<usize> = tree_entry_end_pos(&content);
+    let tree_entry_bytes: Vec<&[u8]> = extract_from_vec_at(content, &pos[..]);
+
+    let mut tree_entry: Vec<TreeEntry> = Vec::new();
+
+    for teb in tree_entry_bytes {
+        match TreeEntry::from_bytes(teb) {
+            Ok(res) => tree_entry.push(res),
+            Err(err) => return Err(err),
+        }
+    }
+
+    Ok(tree_entry)
+}
+
+fn tree_entry_end_pos(v: &[u8]) -> Vec<usize> {
+    v.iter()
+        .enumerate()
+        .filter(|(i, &byte)| byte == b'\0')
+        .map(|(i, byte)| i + 21)
+        .collect::<Vec<usize>>()
+}
+
+fn extract_from_vec_at<'a>(vec: &'a [u8], pos: &[usize]) -> Vec<&'a [u8]> {
+    let mut extract: Vec<&[u8]> = Vec::new();
+
+    let mut prev_pos: usize = 0;
+    for p in pos {
+        let tmp: &[u8] = &vec[prev_pos..*p];
+        extract.push(tmp);
+        prev_pos = *p;
+    }
+
+    extract
 }
 
 fn compute_sha1_hash(content: &str) -> String {
