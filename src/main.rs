@@ -26,6 +26,7 @@ enum GitError {
     UnknownEntryMode,
     InvalidTreeEntry,
 	CreateBlob(String),
+	CreateTree(String),
 }
 
 struct GitObjectParts<T> {
@@ -416,8 +417,42 @@ fn git_write_tree() -> String {
     todo!()
 }
 
-fn create_tree_object(directory: File) -> String {
-    
+use std::path::Path;
+use std::fs::ReadDir;
+
+fn create_tree_object(dir: &Path) -> Result<String, GitError> {
+    if !dir.is_dir() {
+        return Err(GitError::CreateTree("Tree dir is not a directory.".to_string()));
+    }
+
+    let entries: ReadDir = match fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(err) => {
+            return Err(GitError::CreateTree(format!("fs::read_dir: {err}.")));
+        }
+    };
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                return Err(GitError::CreateTree(format!("entry: {err}.")));
+            }
+        };
+
+        let path = entry.path();
+        if path.is_dir() {
+            let tree_sha: String = create_tree_object(&path)?;
+        }
+        else {
+            let Some(filepath) = path.to_str() else {
+                return Err(GitError::CreateTree("path.to_str.".to_string()));
+            };
+            let blob_sha: String = create_blob_object(filepath)?;
+        }
+    }
+
+    todo!()
 }
 
 fn create_blob_object(file_path: &str) -> Result<String, GitError> {
