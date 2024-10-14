@@ -25,6 +25,7 @@ enum GitError {
     UnknownGitType,
     UnknownEntryMode,
     InvalidTreeEntry,
+	CreateBlob(String),
 }
 
 struct GitObjectParts<T> {
@@ -411,16 +412,49 @@ fn git_ls_tree(args: &[String]) {
     }
 }
 
-fn create_blob_object() {
-
-}
-
-fn git_write_tree(directory: File) -> String {
+fn git_write_tree() -> String {
     todo!()
 }
 
-fn create_tree_object() -> String {
-    todo!("")
+fn create_tree_object(directory: File) -> String {
+    
+}
+
+fn create_blob_object(file_path: &str) -> Result<String, GitError> {
+	let mut file: File = match File::open(file_path) {
+        Ok(file) => file,
+        Err(err) => {
+            return Err(GitError::CreateBlob(format!("File::open: {err}")));
+        }
+    };
+
+    let mut content: String = String::new();
+    let _read_bytes: usize = match file.read_to_string(&mut content) {
+        Ok(read_bytes) => read_bytes,
+        Err(err) => {
+            return Err(GitError::CreateBlob(format!("File::read_to_string: {err}")));
+        }
+    };
+
+    let git_object = GitObject::create_blob_with_content(content);
+    let str_git_object: String = git_object.as_string();
+    let sha1_hash: String = compute_sha1_hash(&str_git_object);
+    let bytes: Vec<u8> = match zlib_compression(&str_git_object) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            return Err(GitError::CreateBlob(format!("zlib_compression: {err}")));
+        }
+    };
+
+	let (folder_path, file_name): (String, String) = sha1_to_file_path(&sha1_hash);
+	match write_bytes_to_file(&folder_path, &file_name, &bytes[..]) {
+		Ok(()) => {}
+		Err(err) => {
+			return Err(GitError::CreateBlob(format!("write_bytes_to_file: {err}")));
+		}
+	}
+
+    Ok(sha1_hash)
 }
 
 const GIT_OBJECT_FOLDER_PATH: &str = ".git/objects";
