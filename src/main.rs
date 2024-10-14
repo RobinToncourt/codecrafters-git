@@ -411,6 +411,18 @@ fn git_ls_tree(args: &[String]) {
     }
 }
 
+fn create_blob_object() {
+
+}
+
+fn git_write_tree(directory: File) -> String {
+    todo!()
+}
+
+fn create_tree_object() -> String {
+    todo!("")
+}
+
 const GIT_OBJECT_FOLDER_PATH: &str = ".git/objects";
 
 fn sha1_to_file_path(hash: &str) -> (String, String) {
